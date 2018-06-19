@@ -22,7 +22,8 @@ const wl = require('./weighted-pick');
 const Engines = {
   http: {},
   ws: {},
-  socketio: {}
+  socketio: {},
+  feathers_socketio: {}
 };
 
 JSCK.Draft4 = JSCK.draft4;
