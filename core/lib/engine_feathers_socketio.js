@@ -2,6 +2,61 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+//
+// feathers_socket flow definition
+//
+// - create:
+//     service: user
+//     data:
+//       username: foo
+//       is_archived: false
+//       created_at: now
+//     acknowledge:
+//       capture:
+//         - json: "$[1]._id"
+//           as: newUserId
+//
+// - get:
+//     service: user
+//     id: "345ecb1"
+//     acknowledge:
+//       capture:
+//         - json: "$[1].username"
+//           as: userName
+//         - json: "$[1].gid"
+//           as: userGroupId
+//
+// - find:
+//     service: room
+//     query:
+//       $or:
+//         - is_archived: false
+//         - duration:
+//             $gt: 3
+//     data:
+//       is_archived: true
+//       updated_at: now
+//     options:
+//       pagination:
+//         skip: 20
+//         length: 10
+//
+// - patch:
+//     service: room
+//     id: null
+//     query:
+//       $or:
+//         - is_archived: false
+//         - duration:
+//             $gt: 3
+//     data:
+//       is_archived: true
+//       updated_at: now
+//     options:
+//       pagination:
+//         skip: 20
+//         length: 10
+
 'use strict';
 
 const async = require('async');
@@ -17,6 +72,9 @@ const engineUtil = require('./engine_util');
 const EngineHttp = require('./engine_http');
 const template = engineUtil.template;
 module.exports = FeathersSocketIoEngine;
+
+// Valid Service Methods
+const validServiceMethods = ['create','get', 'find', 'patch', 'update', 'delete']
 
 function FeathersSocketIoEngine(script) {
   this.config = script.config;
@@ -40,15 +98,16 @@ FeathersSocketIoEngine.prototype.createScenario = function(scenarioSpec, ee) {
 function markEndTime(ee, context, startedAt) {
   let endedAt = process.hrtime(startedAt);
   let delta = (endedAt[0] * 1e9) + endedAt[1];
-  ee.emit('response', delta, 0, context._uid);
+  ee.debug('response', delta, 0, context._uid);
 }
 
-function isResponseRequired(spec) {
-  return (spec.emit && spec.emit.response && spec.emit.response.channel);
+function isResponseRequired(reqSpec) {
+  const reqDetails = getRequestDetails(reqSpec);
+  return reqDetails.response && reqDetails.response.channel;
 }
 
-function isAcknowledgeRequired(spec) {
-    return (spec.emit && spec.emit.acknowledge);
+function isAcknowledgeRequired(reqSpec) {
+  return getRequestDetails(reqSpec).hasOwnProperty('acknowledge');
 }
 
 function processResponse(ee, data, response, context, callback) {
@@ -114,14 +173,32 @@ function processResponse(ee, data, response, context, callback) {
   });
 }
 
+///////////////////////////////////////////////////////////////
+//////////////////// THIS IS WHERE THE SHIT HAPPENS ///////////
+///////////////////////////////////////////////////////////////
+
+// Get the type of a RequestSpec amongst validServiceMethods
+const getRequestType = requestSpec =>
+  Object.keys(requestSpec)
+  .find(prop => validServiceMethods.includes(prop))
+
+// Return request details from a RequestSpec set
+// ie, the data inside the 'patch', 'find' or whatever method field this may be
+const getRequestDetails = requestSpec =>
+  requestSpec[getRequestType(requestSpec)]
+
+const isEmitRequest = requestSpec =>
+  Object.keys(requestSpec)
+  .some(prop => validServiceMethods.includes(prop))
+
 FeathersSocketIoEngine.prototype.step = function (requestSpec, ee) {
   let self = this;
 
+  // debug("== This step starts with '" + Object.keys(requestSpec)[0] + "'")
+
+  // Process "loops"
   if (requestSpec.loop) {
     let steps = _.map(requestSpec.loop, function(rs) {
-      if (!rs.emit) {
-        return self.httpDelegate.step(rs, ee);
-      }
       return self.step(rs, ee);
     });
 
@@ -135,77 +212,112 @@ FeathersSocketIoEngine.prototype.step = function (requestSpec, ee) {
     );
   }
 
-  let f = function(context, callback) {
-    // Only process emit requests; delegate the rest to the HTTP engine (or think utility)
+
+  // TODO : verify "requestSpec.service"
+
+  //// Build up request message
+  let stepRequest = {}, reqDetails
+  stepRequest.method = getRequestType(requestSpec)
+  stepRequest.isEmitRequest = typeof stepRequest.method === 'string'
+  if (stepRequest.isEmitRequest) {
+    reqDetails = requestSpec[stepRequest.method]
+    stepRequest.service = reqDetails.service
+  }
+
+  ////////////// Single request/message
+  //////////////////////////////////////////////////////////
+
+  let emitStepMessage = function(context, callback) {
+    // Delegate to the think utility
     if (requestSpec.think) {
+      debug(`-- into emitStepMessage() - think`)
       return engineUtil.createThink(requestSpec, _.get(self.config, 'defaults.think', {}));
     }
-    if (!requestSpec.emit) {
+    // TODO : delegate functions, http stuff...
+    if (!stepRequest.isEmitRequest) {
+      debug(`-- into emitStepMessage() - Not an 'emit' request, let's delegate`)
       let delegateFunc = self.httpDelegate.step(requestSpec, ee);
       return delegateFunc(context, callback);
     }
+
+    debug(`-- into emitStepMessage() for ${stepRequest.service}/${stepRequest.method}`)
+
     ee.emit('request');
     let startedAt = process.hrtime();
-    let socketio = context.sockets[requestSpec.emit.namespace] || null;
 
-    if (!(requestSpec.emit && requestSpec.emit.channel && socketio)) {
-      return ee.emit('error', 'invalid arguments');
+    // Reclaim my socket
+    let socketio = context.sockets[reqDetails.namespace] || null;
+
+    if (! (stepRequest.isEmitRequest && socketio) ) {
+      return ee.emit('error', 'invalid arguments - no valid service method or no socket');
     }
 
-    let outgoing = {
-      channel: template(requestSpec.emit.channel, context),
-      data: template(requestSpec.emit.data, context)
-    };
-    // Feathers workaround include the 'ID' into the data
-    if(requestSpec.emit.id) {
-      debug("Got a Feathers 'id' field : ",requestSpec.emit.id)
-      outgoing.data = {
-        feathersId :template(requestSpec.emit.id,context),
-        ...outgoing.data
-      }
+    // Prepare stepRequest message
+    stepRequest.arguments = [`${stepRequest.service}::${stepRequest.method}`]
+    if (reqDetails.id) {
+      stepRequest.arguments.push(template(reqDetails.id, context))
+    }
+    if (reqDetails.query) {
+      stepRequest.arguments.push(template(reqDetails.query, context))
+    }
+    if (reqDetails.data) {
+      stepRequest.arguments.push(template(reqDetails.data, context))
+    }
+    if (reqDetails.options) {
+      stepRequest.arguments.push(template(reqDetails.options, context))
     }
 
     let endCallback = function (err, context) {
+
+      /////// CALLBACK FOR EMIT ACKNOWLEDGE PROCESSING
+      const processAcknowledge  = () => {
+        debug("-- into processAcknowledge()")
+        let response = {
+          data: template(reqDetails.acknowledge.data, context),
+          capture: template(reqDetails.acknowledge.capture, context),
+          match: template(reqDetails.acknowledge.match, context)
+        };
+        // Make sure data, capture or match has a default json spec for parsing socketio responses
+        _.each(response, function (r) {
+          if (_.isPlainObject(r) && !('json' in r)) {
+            r.json = '$.0'; // Default to the first callback argument
+          }
+        });
+        // Acknowledge data can take up multiple arguments of the emit callback
+        processResponse(ee, arguments, response, context, function (err) {
+          if (!err) {
+            markEndTime(ee, context, startedAt);
+          }
+          return callback(err, context);
+        });
+      }
+
       if (err) {
         debug(err);
       }
 
       if (isAcknowledgeRequired(requestSpec)) {
-        // Acknowledge required so add callback to emit
-        socketio.emit(outgoing.channel, outgoing.data, function () {
-          let response = {
-            data: template(requestSpec.emit.acknowledge.data, context),
-            capture: template(requestSpec.emit.acknowledge.capture, context),
-            match: template(requestSpec.emit.acknowledge.match, context)
-          };
-          // Make sure data, capture or match has a default json spec for parsing socketio responses
-          _.each(response, function (r) {
-            if (_.isPlainObject(r) && !('json' in r)) {
-              r.json = '$.0'; // Default to the first callback argument
-            }
-          });
-          // Acknowledge data can take up multiple arguments of the emit callback
-          processResponse(ee, arguments, response, context, function (err) {
-            if (!err) {
-              markEndTime(ee, context, startedAt);
-            }
-            return callback(err, context);
-          });
-        });
-      } else {
+        debug("before pushing processAcknowledge()", stepRequest.arguments)
+        stepRequest.arguments.push(processAcknowledge);
+        debug("Calling emit", stepRequest.arguments)
+        socketio.emit(...stepRequest.arguments);
+      }
+      else {
         // No acknowledge data is expected, so emit without a listener
-        socketio.emit(outgoing.channel, outgoing.data);
+        debug("Calling emit no ackownledge", stepRequest.arguments)
+        socketio.emit(...stepRequest.arguments);
         markEndTime(ee, context, startedAt);
         return callback(null, context);
       }
     };
 
     if (isResponseRequired(requestSpec)) {
+      debug("Response required (no acknowledge)")
       let response = {
-        channel: template(requestSpec.emit.response.channel, context),
-        data: template(requestSpec.emit.response.data, context),
-        capture: template(requestSpec.emit.response.capture, context),
-        match: template(requestSpec.emit.response.match, context)
+        channel: template(reqDetails.response.channel, context),
+        data: template(reqDetails.response.data, context),
+        capture: template(reqDetails.response.capture, context),
+        match: template(reqDetails.response.match, context)
       };
       // Listen for the socket.io response on the specified channel
       let done = false;
@@ -221,7 +333,8 @@ FeathersSocketIoEngine.prototype.step = function (requestSpec, ee) {
         });
       });
       // Send the data on the specified socket.io channel
-      socketio.emit(outgoing.channel, outgoing.data);
+      debug("Calling emit - response Required no acknowledge", stepRequest.arguments)
+      socketio.emit(...stepRequest.arguments);
       // If we don't get a response within the timeout, fire an error
       let waitTime = self.config.timeout || 10;
       waitTime *= 1000;
@@ -238,26 +351,32 @@ FeathersSocketIoEngine.prototype.step = function (requestSpec, ee) {
   };
 
   function preStep(context, callback){
+    debug(`-- into preStep() for ${stepRequest.service}/${stepRequest.method}`)
     // Set default namespace in emit action
-    requestSpec.emit.namespace = template(requestSpec.emit.namespace, context) || "/";
+    reqDetails.namespace = template(reqDetails.namespace, context) || "/";
 
-    self.loadContextSocket(requestSpec.emit.namespace, context, function(err, socket){
+    self.loadContextSocket(reqDetails.namespace, context, function(err, socket){
       if(err) {
         debug(err);
         ee.emit('error', err.message);
         return callback(err, context);
       }
 
-      return f(context, callback);
+      return emitStepMessage(context, callback);
     });
   }
 
-  if(requestSpec.emit) {
+  if(stepRequest.isEmitRequest) {
+    // debug("Will go to preStep()")
     return preStep;
   } else {
-    return f;
+    // debug("Will go to emitStepMessage()")
+    return emitStepMessage;
   }
 };
+///////////////////////////////////////////////////////////////
+/////////////////////// AND NOW WE'RE DONE
+///////////////////////////////////////////////////////////////
 
 FeathersSocketIoEngine.prototype.loadContextSocket = function(namespace, context, cb) {
   context.sockets = context.sockets || {};
@@ -273,23 +392,24 @@ FeathersSocketIoEngine.prototype.loadContextSocket = function(namespace, context
       tls
     );
 
+    let socket = io(target, options)
+
     // Feathers proxy : rearrange arguments according to method
-    let socket = Object.create(io(target, options))
-    socket.emit = function(channel, data, callback) {
-      // It's a Feathers request with separate id
-      if (data.feathersId) {
-        const id = data.feathersId
-        const strippedData = { ...data }
-        delete strippedData.feathersId
-        debug(`Feathers call to ${channel} with id ${id} and data =`, strippedData)
-        return this.__proto__.emit.call(this,channel, id, strippedData, callback)
-      }
-      return this.__proto__.emit.call(this, channel, data, callback)
-    }
+    // let socket = Object.create(io(target, options))
+    // socket.emit = function(channel, data, callback) {
+    //   // It's a Feathers request with separate id
+    //   if (data.feathersId) {
+    //     const id = data.feathersId
+    //     const strippedData = { ...data }
+    //     delete strippedData.feathersId
+    //     debug(`Feathers call to ${channel} with id ${id} and data =`, strippedData)
+    //     return this.__proto__.emit.call(this,channel, id, strippedData, callback)
+    //   }
+    //   return this.__proto__.emit.call(this, channel, data, callback)
+    // }
 
     context.sockets[namespace] = socket;
     wildcardPatch(socket);
-
 
 
     socket.on('*', function () {
@@ -329,7 +449,7 @@ FeathersSocketIoEngine.prototype.compile = function (tasks, scenarioSpec, ee) {
     ee.emit('started');
     self.loadContextSocket('/', context, function done(err) {
       if (err) {
-        ee.emit('error', err);
+        ee.debug('error', err);
         return callback(err, context);
       }
 
