@@ -165,6 +165,7 @@ SocketIoEngine.prototype.step = function (requestSpec, ee) {
       if (isAcknowledgeRequired(requestSpec)) {
         // Acknowledge required so add callback to emit
         socketio.emit(outgoing.channel, outgoing.data, function () {
+          debug("-- into processAcknowledge()")
           let response = {
             data: template(requestSpec.emit.acknowledge.data, context),
             capture: template(requestSpec.emit.acknowledge.capture, context),

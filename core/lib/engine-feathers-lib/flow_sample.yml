@@ -1,0 +1,54 @@
+
+# feathers_socket flow definition
+
+- create:
+    service: user
+    data:
+      username: foo
+      is_archived: false
+      created_at: now
+    acknowledge:
+      capture:
+        - json: "$[1]._id"
+          as: newUserId
+
+- get:
+    service: user
+    id: "345ecb1"
+    acknowledge:
+      capture:
+        - json: "$[1].username"
+          as: userName
+        - json: "$[1].gid"
+          as: userGroupId
+
+- find:
+    service: room
+    query:
+      $or:
+        - is_archived: false
+        - duration:
+            $gt: 3
+    data:
+      is_archived: true
+      updated_at: now
+    options:
+      pagination:
+        skip: 20
+        length: 10
+
+- patch:
+    service: room
+    id: null
+    query:
+      $or:
+        - is_archived: false
+        - duration:
+            $gt: 3
+    data:
+      is_archived: true
+      updated_at: now
+    options:
+      pagination:
+        skip: 20
+        length: 10
