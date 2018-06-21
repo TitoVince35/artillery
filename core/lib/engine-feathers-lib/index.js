@@ -4,7 +4,7 @@ const engineUtil = require('../engine_util');
 const template = engineUtil.template;
 
 // Valid Service Methods
-const validServiceMethods = ['create','get', 'find', 'patch', 'update', 'delete']
+const validServiceMethods = ['create','get', 'find', 'patch', 'update', 'remove']
 
 module.exports = {
   processApiCallDetailsToEmitArgs,
@@ -35,18 +35,18 @@ function processApiCallDetailsToEmitArgs(reqDetails, context) {
     case 'create':
       return processCreateRequest(reqDetails, context);
       break;
+    case 'patch':
+    case 'update':
+      return processPatchUpdateRequest(reqDetails, context);
+      break;
     case 'get':
       return processGetRequest(reqDetails, context);
       break;
     case 'find':
       return processFindRequest(reqDetails, context);
       break;
-    case 'delete':
-      return processDeleteRequest(reqDetails, context);
-      break;
-    case 'patch':
-    case 'update':
-      return processPatchUpdateRequest(reqDetails, context);
+    case 'remove':
+      return processRemoveRequest(reqDetails, context);
       break;
     default:
       throw 'Unknow request method '+reqDetails.method
@@ -61,10 +61,14 @@ function processAuthenticateRequest(rq, ctx) {
 }
 
 function processCreateRequest(rq,ctx) {
-  return [
+  const res = [
     `${rq.service}::create`,
     template(rq.data,ctx)
   ]
+  if (rq.params) {
+    res.push(template(rq.params,ctx))
+  }
+  return res
 }
 
 function processGetRequest(rq,ctx) {
@@ -72,6 +76,10 @@ function processGetRequest(rq,ctx) {
     `${rq.service}::get`,
     template(rq.id,ctx)
   ]
+  if (rq.params) {
+    res.push(template(rq.params,ctx))
+  }
+  return res
 }
 
 function processFindRequest(rq,ctx) {
@@ -79,11 +87,8 @@ function processFindRequest(rq,ctx) {
     `${rq.service}::find`,
     rq.id ? template(rq.id,ctx) : null
   ]
-  if (rq.query) {
-    res.push(template(rq.query,ctx))
-  }
-  if (rq.options) {
-    res.push(template(rq.options,ctx))
+  if (rq.params) {
+    res.push(template(rq.params,ctx))
   }
   return res
 }
@@ -94,18 +99,15 @@ function processPatchUpdateRequest(rq,ctx) {
     `${rq.service}::${rq.method}`,
     rq.id ? template(rq.id,ctx) : null
   ]
-  if (rq.query) {
-    res.push(template(rq.query,ctx))
-  }
-  if (rq.data) {
-    res.push(template(rq.data,ctx))
+  if (rq.prams) {
+    res.push(template(rq.params,ctx))
   }
   return res
 }
 
-function processDeleteRequest(rq,ctx) {
+function processRemoveRequest(rq,ctx) {
   const res = [
-    `${rq.service}::delete`,
+    `${rq.service}::remove`,
     rq.id ? template(rq.id,ctx) : null
   ]
   if (rq.query) {
