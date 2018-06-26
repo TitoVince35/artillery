@@ -65,12 +65,12 @@
     "socketio-wildcard": "^2.0.0",
     "stats-lite": "^2.1.0",
     "tmp": "0.0.28",
-    "tough-cookie": "^2.3.4",
+    "tough-cookie": "^2.4.3",
     "traverse": "^0.6.6",
     "try-require": "^1.2.1",
     "update-notifier": "^2.1.0",
     "uuid": "^2.0.3",
-    "ws": "^5.1.1"
+    "ws": "^5.2.1"
   },
   "devDependencies": {
     "bats": "^0.4.2",
@@ -85,7 +85,7 @@
     "istanbul": "^0.3.22",
     "nock": "^9.2.5",
     "pre-commit": "^1.2.2",
-    "prettier": "^1.5.2",
+    "prettier": "^1.13.6",
     "sinon": "^4.5.0",
     "socket.io": "^2.1.0",
     "tape": "^4.9.0"

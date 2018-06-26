@@ -1,5 +1,5 @@
 
-const debug = require('debug')('feathers_socketio');
+const debug = require('debug')('feathers_socketio_details');
 const engineUtil = require('../engine_util');
 const template = engineUtil.template;
 
@@ -87,8 +87,8 @@ function processFindRequest(rq,ctx) {
     `${rq.service}::find`,
     rq.id ? template(rq.id,ctx) : null
   ]
-  if (rq.params) {
-    res.push(template(rq.params,ctx))
+  if (rq.params && rq.params.query) {
+    res.push(template(rq.params.query,ctx))
   }
   return res
 }
@@ -99,18 +99,24 @@ function processPatchUpdateRequest(rq,ctx) {
     `${rq.service}::${rq.method}`,
     rq.id ? template(rq.id,ctx) : null
   ]
-  if (rq.prams) {
-    res.push(template(rq.params,ctx))
+  if (rq.data) {
+    res.push(template(rq.data,ctx))
   }
+  if (rq.params && rq.params.query) {
+    res.push(template(rq.params.query,ctx))
+  }
+  debug('processPatchUpdateRequest()', res)
   return res
 }
 
 function processRemoveRequest(rq,ctx) {
+  debug('processRemoveRequest()', rq)
   const res = [
     `${rq.service}::remove`,
     rq.id ? template(rq.id,ctx) : null
   ]
-  if (rq.query) {
-    res.push(template(rq.query,ctx))
+  if (rq.params && rq.params.query) {
+    res.push(template(rq.params.query,ctx))
   }
+  return res
 }
