@@ -84,8 +84,7 @@ function processGetRequest(rq,ctx) {
 
 function processFindRequest(rq,ctx) {
   const res = [
-    `${rq.service}::find`,
-    rq.id ? template(rq.id,ctx) : null
+    `${rq.service}::find`
   ]
   if (rq.params && rq.params.query) {
     res.push(template(rq.params.query,ctx))
